@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mitra-bo-zh-tagger"
+version = "0.1.0"
+description = "Sentence/word segmentation, POS tagging and Sanskrit-unit annotation for classical Tibetan and Buddhist Chinese (mitra-bo-zh-tagger model)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = ["torch>=2.2", "transformers>=4.57", "pyewts>=0.2", "accelerate>=0.30"]
+
+[project.scripts]
+mitra-tag = "mitra_tagger.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["mitra_tagger*"]
