@@ -37,12 +37,29 @@ def _pick_dtype(device: str, dtype):
     return torch.float32
 
 
+def _disable_cuda_kernels(device: str) -> None:
+    """transformers' Qwen3.5 uses the causal-conv1d / flash-linear-attention CUDA kernels whenever they
+    are importable, even on CPU or MPS, and then crashes. Force the pure-PyTorch path off CUDA."""
+    if device.startswith("cuda"):
+        return
+    try:
+        import transformers.models.qwen3_5.modeling_qwen3_5 as m
+    except Exception:
+        return
+    for name in ("causal_conv1d_fn", "causal_conv1d_update", "chunk_gated_delta_rule", "fused_recurrent_gated_delta_rule"):
+        if hasattr(m, name):
+            setattr(m, name, None)
+    if hasattr(m, "is_fast_path_available"):
+        m.is_fast_path_available = False
+
+
 class Tagger:
     def __init__(self, model: str = DEFAULT_MODEL, device: Optional[str] = None, dtype=None,
                  max_new_tokens: int = 1024, bo_max_chars: int = 500, zh_max_chars: int = 200):
         from transformers import AutoModelForCausalLM, AutoTokenizer
         self.device = _pick_device(device)
         self.dtype = _pick_dtype(self.device, dtype)
+        _disable_cuda_kernels(self.device)
         self.tokenizer = AutoTokenizer.from_pretrained(model)
         self.model = AutoModelForCausalLM.from_pretrained(model, dtype=self.dtype).to(self.device).eval()
         self.max_new_tokens = max_new_tokens
