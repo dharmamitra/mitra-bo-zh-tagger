@@ -3,7 +3,7 @@
 Sentence segmentation, word segmentation, part-of-speech tagging and Sanskrit-unit annotation for
 classical Tibetan (Wylie or Unicode) and Buddhist Chinese (Taishō-style, unpunctuated), using
 the [`buddhist-nlp/mitra-bo-zh-tagger`](https://huggingface.co/buddhist-nlp/mitra-bo-zh-tagger) model
-(a 9B Qwen3.5-based model. For Chinese the model also restores punctuation.
+(a 9B Qwen3.5-based model). For Chinese the model also restores punctuation.
 
 ```
 in : de nas tshe dang ldan pa kun dga' bos bcom ldan 'das la 'di skad ces gsol to/ /
@@ -12,6 +12,24 @@ out: [de_nas/A] [tshe_dang_ldan_pa/J] [kun_dga'_bo/P] +s/C [bcom_ldan_'das/N] la
 in : 爾時世尊告諸比丘汝等當知一切諸法皆悉無常苦空無我
 out: 爾/R 時/N 世尊/N 告/V 諸/L 比丘/N ：/p 「/p 汝/R 等/L 當/X 知/V ，/p [一切/N 諸/L 法/N]=K 皆/A 悉/A 無常/J 、/p 苦/J 、/p 空/J 、/p [無/V 我/R]=B 。/p
 ```
+
+## Credits
+
+The Tibetan grammar layer in this package is built on the work of Nathan W. Hill, Marieke Meelen,
+Christian Faggionato and Edward Garrett, whose annotation manual, rule-based tagger and ACTib
+lexicon define the tag set, the particle functions and the disambiguation rules used here:
+
+* Faggionato, C., Meelen, M. & Hill, N. W. (2023). *Classical Tibetan Annotation Manual, Part II:
+  Segmentation & POS tagging* (version 1.0). Zenodo. https://doi.org/10.5281/zenodo.7880130 (CC BY 4.0)
+* Garrett, E. & Hill, N. W. (2017). *A rule based Tibetan part-of-speech (POS) tagger for the creation of
+  gold standard training data*. SOAS University of London, Zenodo. https://doi.org/10.5281/zenodo.574882
+  (CC BY 4.0)
+* Meelen, M. et al. *ACTib: Annotated Corpus of Classical Tibetan*, gold lexicon.
+  https://github.com/mariekemeelen/actib (MIT)
+
+See [Sources of the rules](#sources-of-the-rules) for exactly which sections and rules were used, and
+`CITATION.md` for citation forms. If you use the Tibetan function labels in published work, please
+cite these sources alongside this package.
 
 ## Install
 
@@ -92,22 +110,65 @@ names are one word).
 
 ## Tibetan grammar layer
 
-`mitra_tagger.tibetan_grammar` carries the tables and rules that the dharmamitra main backend uses in
-its Tibetan grammar-explained mode, so tagger output can feed the same UI:
+The tagger gives segmentation and a coarse tag. For deployment, dharamitra's grammar-explained mode
+runs a **rule-based layer on top of the tagger output** that turns tags into spelled-out grammatical
+functions and tense notes. That layer is shipped here unchanged from the deployed backend branch
+(`feat/tibetan-tagger`, `api/services/`), so this package produces the same labels the website shows:
 
-* spelled-out functions for every tag and for each particle (`kyis` → *agentive (instrumental) case
-  particle*, `la` → *dative-locative particle (la don)*, `nas` as a case particle vs as a clause
-  connective, final and quotative particles, negation, determiners, attached affixes);
-* `remove_case_endings()` — the backend's case-ending stripping for dictionary lookup (same list, same order);
-* `with_trailing_tsheg()` — display convention: Tibetan-script surface forms end in exactly one tsheg;
-* `steinert_url()` and `is_linkable()` — Christian Steinert dictionary links; single-syllable lemmas
-  always link, multi-syllable lemmas only when a `headword_check(wylie)` callback confirms a real headword;
-* `to_word_events(sentence, headword_check=None)` — `WordEvent` dicts as in the backend's
-  `typing_models/grammar_events.py` (`surface`, `lemma`, `transliteration`, `function`, `meaning`,
-  `external_source`, `external_url`, `mitra`), plus `sanskrit_unit` for bracketed words. `meaning`
-  is left empty for a dictionary or LLM to fill.
+* `mitra_tagger/tibetan_rules.py` — the original layer (24–25 September 2026): the case-particle
+  versus converb decision (the same morpheme is a case particle after a noun or verbal noun and a
+  converb after a verb, for the 13 morpheme groups kyi, kyis, la, na, nas, las, du, dang, te, zhing,
+  rung, kyin, pas), clitics, determiners, relator nouns (a noun that takes a genitive before it or a
+  spatial case after it), negation, fused demonstrative + case forms (der, des, 'dir, gang gis …), and
+  verb-stem notes ("past stem of 'jog") from `tibetan_verbs.csv`.
+* `mitra_tagger/tibetan_rules_ext.py` — the six rule families added in the 25 September ablation
+  (config s7: +342 Elo over the base layer), on by default; `TIB_RULE_STEPS="" ` disables them,
+  `TIB_RULE_STEPS=special,regex` picks families: special verbs (copulas, existentials, modals nus /
+  dgos / srid / shes, the byed / 'gro / 'gyur paradigms), pronouns, adverbs (intensifiers such as rab tu,
+  the -chad directionals, proclausal and temporal adverbs, terminative adverbials), nominalisers beyond
+  pa/ba (mkhan, tshul, sa, rgyu, thabs, lugs …), list gaps (demonstratives, quantifiers, plural markers,
+  relator nouns), and the regex-tagger disambiguations.
+* `mitra_tagger/tibetan_grammar.py` — the backend's dispatcher `rule_function()` over both files
+  (verbatim), `flat_tokens()` to give each word its neighbours, `function_for()`, and the display and
+  link conventions of the backend: case-ending stripping for dictionary lookup, the trailing-tsheg
+  citation form, Steinert links (single-syllable lemmas always; multi-syllable only when a
+  `headword_check(wylie)` callback confirms a real headword), and `to_word_events()` producing the
+  backend's `WordEvent` records (`surface`, `lemma`, `transliteration`, `function`, `meaning`,
+  `external_source`, `external_url`, `mitra`, plus `sanskrit_unit`). `meaning` is left empty.
 
-`mitra_tagger.chinese_grammar` does the same for Chinese (DDB links, compound types, `punctuated()`).
+When no rule applies, the label falls back to the plain POS name, exactly as in the backend. The
+regex family deliberately declines in some cases (e.g. a final particle that fails the sandhi check).
+
+### Sources of the rules
+
+1. **Faggionato, Meelen & Hill (2023), *Classical Tibetan Annotation Manual, Part II: Segmentation
+   & POS tagging*, Zenodo, doi:10.5281/zenodo.7880130 (CC BY 4.0).** The main source. Sections used:
+   §3.3 and §3.5 (case particles and converbs, the 13 morpheme groups), §3.4 (clitics: topic ni, focus
+   kyang/yang, quotatives, question and final particles, imperative cig), §3.6 (determiners:
+   demonstratives, plural markers, nyid and kho na, quantifiers, tsam), §3.8 (relator nouns and their
+   genitive-before / spatial-case-after rule), §3.9 (nominalisers incl. mkhan, tshul), §3.10 (negation),
+   §3.12 (pronouns), §3.2 (adverbs: intensifiers, -chad directionals), §3.14.2 (special verbs: copulas,
+   existentials, modals, byed / 'gro / 'gyur).
+2. **Garrett & Hill (2017), *A rule based Tibetan part-of-speech (POS) tagger for the creation of gold
+   standard training data*, SOAS, Zenodo, doi:10.5281/zenodo.574882 (CC BY 4.0).** 307 regex
+   disambiguation rules for the older tagset. The base layer took its case-versus-converb principle;
+   the regex family adds the sandhi checks for final and question particles, de as semi-final only
+   after a d-final syllable, su as terminative only after an s-final syllable (otherwise "who"),
+   gyis before shig as the imperative of bgyid, tense from context (ma / mi before a verb, a following
+   cig or nas), and the lexical rules for yongs su, rjes su, khong du, kho, de dag.
+3. **A Tibetan verbs database** (`tibetan_verbs.csv`, 2,492 rows: present, past, future, imperative
+   stems), from the dharmamitra backend; it supplies the "past stem of …" notes. Its original
+   provenance is not recorded; it predates this work.
+4. **Marieke Meelen's ACTib gold lexicon** (github.com/mariekemeelen/actib, MIT). Its per-tag word
+   lists were used as a reference when filling the closed-class lists (pronouns, adverbs, quantifiers,
+   relator nouns). It is not loaded at runtime; its verb list (verblex.txt) is not used yet.
+
+Plus additions of the backend's author. The tag set of the tagger itself is the terse scheme of the
+tibetan-segmentation project (the manual's tags collapsed to 14 letters); the Sanskrit-unit brackets
+come from the Sanskrit–Tibetan alignments used to build the training data.
+
+`mitra_tagger.chinese_grammar` is a thin counterpart for Chinese (POS names, compound types, DDB
+links, `punctuated()`); there is no rule layer for Chinese yet.
 
 ## Quality
 

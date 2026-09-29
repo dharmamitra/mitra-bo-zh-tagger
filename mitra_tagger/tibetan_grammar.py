@@ -1,15 +1,23 @@
-"""Tibetan tag inventory, particle functions and the dharmamitra grammar-explained conventions.
+"""Tibetan function labels and dharmamitra grammar-explained conventions on top of the tagger.
 
-The tables here mirror what the dharmamitra main backend hard-codes for its Tibetan
-grammar-explained mode (services/knn_translate_gemini.py), so that tagger output can be turned
-into the same WordEvent records the frontend renders:
-  * segmentation at tsheg boundaries; multi-syllable words only for genuine lexemes; a stem and
-    its case particle, an adverb and its verb, a verb and its auxiliary are always separate words;
-  * lemmas in Wylie; case endings stripped for dictionary lookup (same list, same order);
-  * surface forms shown in Tibetan script ending in exactly one tsheg (dictionary citation form);
-  * a multi-syllable lemma only gets a dictionary link when it is a real headword; single
-    syllables always link (Christian Steinert dictionary);
-  * grammatical functions spelled out, never abbreviated tags.
+This module is the deployment layer that the dharmamitra main backend runs over the Tibetan tagger
+output in its grammar-explained mode (backend: services/tibetan_grammar.py, branch feat/tibetan-tagger).
+It is ported here verbatim where possible so that this package produces the same function labels:
+
+* `tibetan_rules.py`   — the original rule layer (24-25 September 2026): case particle vs converb after
+  a noun vs after a verb (Faggionato, Meelen & Hill 2023, §3.3/§3.5; the principle from Garrett & Hill
+  2017), clitics (§3.4), determiners (§3.6), relator nouns (§3.8), negation (§3.10), fused
+  demonstrative+case forms, and verb-stem tense notes from `tibetan_verbs.csv`.
+* `tibetan_rules_ext.py` — the six rule families added in the 25 September ablation, on by default
+  (env TIB_RULE_STEPS): special verbs (§3.14.2), pronouns (§3.12), adverbs (§3.2), nominalisers (§3.9),
+  list gaps (§3.6/§3.8), and Garrett & Hill regex-tagger disambiguations (sandhi of final/question
+  particles, semi-final de only after -d, su only after -s, gyis + shig, tense from context, small
+  lexical rules).
+* `rule_function()` below — the backend's dispatcher over both files, unchanged.
+
+Backend display/link conventions (services/knn_translate_gemini.py) are also mirrored: case-ending
+stripping for dictionary lookup, the trailing-tsheg citation form, Steinert links with the
+single-syllable / real-headword rule, and the WordEvent record shape (typing_models/grammar_events.py).
 """
 from __future__ import annotations
 import json
@@ -17,13 +25,16 @@ import re
 from typing import Callable, Dict, List, Optional
 from urllib.parse import quote
 
+from . import tibetan_rules as R
+from . import tibetan_rules_ext as X
+
 try:
     import pyewts
     _EWTS = pyewts.pyewts()
 except Exception:  # pragma: no cover
     _EWTS = None
 
-# ---------------------------------------------------------------- tag set
+# ---------------------------------------------------------------- tag set (terse scheme; manual tags collapsed)
 POS_NAMES: Dict[str, str] = {
     "N": "noun", "P": "proper noun", "V": "verb", "G": "verbal noun", "J": "adjective",
     "A": "adverb", "M": "numeral", "R": "pronoun", "D": "determiner", "X": "negation",
@@ -31,62 +42,117 @@ POS_NAMES: Dict[str, str] = {
     "I": "interjection", "p": "punctuation",
 }
 
-# ---------------------------------------------------------------- particles
-# Case particles (tag C) with the function the grammar-explained mode spells out.
-CASE_PARTICLES: Dict[str, str] = {
-    **{p: "agentive (instrumental) case particle" for p in ("kyis", "gyis", "gis", "yis", "'is", "s")},
-    **{p: "genitive case particle" for p in ("kyi", "gyi", "gi", "yi", "'i")},
-    "la": "dative-locative particle (la don)",
-    "na": "locative particle (la don)",
-    **{p: "terminative particle (la don)" for p in ("tu", "du", "ru", "su", "r")},
-    "nas": "ablative particle (from, out of)",
-    "las": "ablative particle (from; comparative than)",
-    "dang": "associative particle (and, with)",
-    "bas": "comparative particle (than)",
+# affix tokens (+'i, +s, +r, +'o, +'am, +'ang, +'u): backend services/tibetan_grammar.py AFFIX_INFO
+AFFIX_INFO = {
+    "'i": ("genitive particle", "of; links the preceding word to the following noun"),
+    "s": ("agentive/instrumental particle", "by; marks the agent or the instrument"),
+    "r": ("terminative particle", "to, as, in; marks the goal, purpose or manner"),
+    "'o": ("sentence-final particle", "closes the statement"),
+    "'am": ("question / alternative particle", "or; whether"),
+    "'ang": ("focus particle", "also, even"),
+    "'u": ("diminutive suffix", "little"),
 }
 
-# Clause particles / converbs after a verb (tag K).
-CLAUSE_PARTICLES: Dict[str, str] = {
-    "nas": "clause connective (after doing ..., then)",
-    **{p: "gerundive connective (and, having ...)" for p in ("te", "ste", "de")},
-    **{p: "coordinating connective (and, while)" for p in ("zhing", "cing", "shing")},
-    "na": "conditional / temporal connective (if, when)",
-    **{p: "concessive connective (although, even)" for p in ("kyang", "yang", "'ang")},
-    **{p: "continuative (while ...ing)" for p in ("gin", "kyin", "gyin", "yin")},
-    "bas": "causal connective (because, since)",
-    "pas": "causal connective (because, since)",
-    "phyir": "purposive / causal (in order to, because)",
-}
 
-# Clitics and final particles (tag L).
-FINAL_PARTICLES: Dict[str, str] = {
-    **{p: "sentence-final particle" for p in ("'o", "so", "to", "do", "no", "bo", "mo", "ro", "lo", "ngo", "go", "'o")},
-    **{p: "interrogative particle" for p in ("'am", "sam", "tam", "dam", "nam", "bam", "mam", "ram", "lam", "ngam", "gam")},
-    "ni": "topic particle",
-    **{p: "quotative particle (thus, saying)" for p in ("ces", "zhes", "shes")},
-    **{p: "emphatic / concessive clitic (also, even)" for p in ("kyang", "yang", "'ang")},
-    "'ung": "emphatic clitic",
-}
-
-# Affixes the tagger writes as "+affix" (written attached to the preceding syllable in the input).
-AFFIXES: Dict[str, str] = {
-    "'i": "genitive case (attached)", "s": "agentive case (attached)", "r": "terminative case (attached)",
-    "'o": "sentence-final particle (attached)", "'am": "interrogative particle (attached)",
-    "'ang": "concessive clitic (attached)", "'u": "diminutive (attached)", "'is": "agentive case (attached)",
-}
-
-# Negation (tag X).
-NEGATION: Dict[str, str] = {"ma": "negation (prohibitive / past)", "mi": "negation (present / future)",
-                            "med": "negative existential (there is not)", "min": "negative copula (is not)"}
-
-# Determiners, demonstratives and plural markers (tag D).
-DETERMINERS: Dict[str, str] = {"de": "demonstrative (that)", "'di": "demonstrative (this)", "rnams": "plural marker",
-                               "dag": "plural / dual marker", "zhig": "indefinite article (a, some)",
-                               "cig": "indefinite article (a, some)", "shig": "indefinite article (a, some)",
-                               "gang": "relative / interrogative (which, what)", "su": "interrogative (who)"}
+def _nw(s: str) -> str:
+    return " ".join((s or "").replace("_", " ").split()).strip()
 
 
-# ---------------------------------------------------------------- backend conventions (verbatim)
+# ---------------------------------------------------------------- rule dispatcher (backend rule_function, verbatim)
+def rule_function(w: dict, prev: dict = None, nxt: dict = None) -> str:
+    """Authoritative function text for a token from the manual's rules (particles,
+    determiners, negation, relator nouns, verb stems); "" when no rule applies.
+    w / prev / nxt: {"wylie", "pos", "affix", "first", "last", "next"} as built by `flat_tokens`."""
+    wy = w.get("wylie", "")
+    pos = w.get("pos", "")
+    first = bool(w.get("first")) or prev is None
+    last = bool(w.get("last")) or nxt is None
+    if X.on("regex") and first:
+        prev = None  # the regex tagger reads sentence punctuation: no context across a shad
+    prev_pos = (prev or {}).get("pos")
+    prev_wy = (prev or {}).get("wylie")
+    next_wy = (nxt or {}).get("wylie")
+    rx = X.regex_particle(wy, prev_wy, prev_pos, next_wy, last)
+    if rx == "skip":
+        return ""
+    if rx:
+        return f"{rx[0]}: {rx[1]}"
+    next2_wy = ((nxt or {}).get("next") or {}).get("wylie")
+    for lab in (X.list_label(wy, pos, prev_wy), X.adverb_label(wy, pos, prev_wy, first), X.pronoun_label(wy, pos, prev_wy, next_wy, next2_wy)):
+        if lab:
+            return f"{lab[0]}: {lab[1]}" if lab[1] else lab[0]
+    nzc = X.split_nominaliser_case(wy) if pos in ("G", "N", "V", "K", "C", "A") else None
+    if nzc:
+        stem, nom, case = nzc
+        sv = X.special_verb(stem, prev_wy, prev_pos, next_wy)
+        vi = sv[0] if sv else R.verb_info(stem, prev_wy, next_wy)
+        if vi:
+            return f"verbal noun ({vi} + nominaliser {nom}) + {X.NOMZ_CASE[case]}"
+    if pos in ("C", "K", "L", "D", "X") or (pos in ("A", "M", "J", "R", "I") and R.is_closed_class(wy)):
+        lab = R.particle_label(wy, prev_pos, prev_wy)
+        if lab:
+            return f"{lab[0]}: {lab[1]}"
+        return ""
+    nz = X.split_nominaliser(wy, pos) if pos in ("G", "N", "V", "A") else None
+    if nz:
+        stem, nom = nz
+        sv = X.special_verb(stem, prev_wy, prev_pos, next_wy)
+        vi = R.verb_info(stem, prev_wy, next_wy)
+        gloss = X.NOMINALISERS.get(nom, "")
+        if sv:
+            return f"verbal noun: {sv[0]} + nominaliser {nom} {gloss}".rstrip()
+        if vi:
+            return f"verbal noun: {vi} + nominaliser {nom} {gloss}".rstrip()
+    if pos in ("N", "A"):
+        lab = R.relator_label(wy, prev_wy, prev_pos, next_wy)
+        if lab:
+            return f"{lab[0]}: {lab[1]}"
+        return ""
+    if pos in ("V", "G"):
+        nominalised = bool(re.search(r"\s(pa|ba|pa'i|ba'i|par|bar|pas|bas)$", wy.strip()))
+        stem = re.sub(r"\s+(pa|ba|par|bar|pas|bas|pa'i|ba'i)$", "", _nw(wy))
+        sv = X.special_verb(stem, prev_wy, prev_pos, next_wy)
+        if sv:
+            if pos == "G" or nominalised:
+                return f"verbal noun: {sv[0]} ({sv[1]}) + nominaliser"
+            return f"{sv[0]}: {sv[1]}"
+        vi = R.verb_info(wy, prev_wy, next_wy)
+        if pos == "G" or nominalised:
+            return f"verbal noun: {vi} + nominaliser" if vi else ("verbal noun" if pos == "V" else "")
+        return f"verb ({vi})" if vi else ""
+    return ""
+
+
+def flat_tokens(sentences) -> List[dict]:
+    """Content tokens of parsed sentences (mitra_tagger.parse.Sentence) in order, each with
+    prev/next pointers, in the dict shape rule_function expects (backend flat_tokens)."""
+    toks: List[dict] = []
+    for s in sentences:
+        start = len(toks)
+        for t in s.tokens:
+            if t.is_punct:
+                continue
+            toks.append({"wylie": _nw(t.surface), "unicode": wylie_to_unicode(t.surface).strip("་"),
+                         "pos": t.pos, "affix": t.is_affix, "first": len(toks) == start, "last": False, "_tok": t})
+        if len(toks) > start:
+            toks[-1]["last"] = True
+    for i, d in enumerate(toks):
+        d["prev"] = toks[i - 1] if i else None
+        d["next"] = toks[i + 1] if i + 1 < len(toks) else None
+    return toks
+
+
+def function_for(tokdict: dict) -> str:
+    """Spelled-out function for one flat token: the rule layer's label, else the affix table,
+    else the plain POS name (what the backend shows when no rule applies)."""
+    if tokdict.get("affix"):
+        info = AFFIX_INFO.get(tokdict["wylie"])
+        return f"{info[0]}: {info[1]}" if info else f"attached affix {tokdict['wylie']}"
+    func = rule_function(tokdict, tokdict.get("prev"), tokdict.get("next"))
+    return func or POS_NAMES.get(tokdict.get("pos", ""), tokdict.get("pos", ""))
+
+
+# ---------------------------------------------------------------- backend display / link conventions (verbatim)
 # Same list and order as dharmamitra-main-backend `_remove_tibetan_case_endings`.
 _CASE_ENDINGS_FOR_LOOKUP = ["kyis", "gis", "las", "nas", "kyi", "gyi", "'i", "su", "ru", "tu", "du", "la", "na", "dang"]
 
@@ -131,9 +197,9 @@ def unicode_to_wylie(tib: str) -> str:
 
 
 def is_linkable(lemma_wylie: str, headword_check: Optional[Callable[[str], bool]] = None) -> bool:
-    """Backend rule: single-syllable lemmas always link; multi-syllable lemmas only if they are a real
-    headword (checked raw and after case-ending stripping). Without a dictionary callback, multi-syllable
-    lemmas are NOT linked (no invented links)."""
+    """Backend rule (_tib_lemma_is_linkable): single-syllable lemmas always link; multi-syllable
+    lemmas only if a real headword (raw or after case-ending stripping). Without a dictionary
+    callback, multi-syllable lemmas are not linked."""
     t = (lemma_wylie or "").strip()
     if not t:
         return False
@@ -147,50 +213,22 @@ def is_linkable(lemma_wylie: str, headword_check: Optional[Callable[[str], bool]
     return bool(stripped) and stripped != t and headword_check(stripped)
 
 
-# ---------------------------------------------------------------- functions
-def function_for(token, prev_pos: Optional[str] = None) -> str:
-    """Spelled-out grammatical function for a tagged token (Token from mitra_tagger.parse)."""
-    w = token.surface.strip()
-    if token.is_affix:
-        return AFFIXES.get(w, f"attached affix {w}")
-    p = token.pos
-    if p == "C":
-        return CASE_PARTICLES.get(w, "case particle")
-    if p == "K":
-        return CLAUSE_PARTICLES.get(w, "clause particle / converb")
-    if p == "L":
-        return FINAL_PARTICLES.get(w, "clitic or final particle")
-    if p == "X":
-        return NEGATION.get(w, "negation")
-    if p == "D":
-        return DETERMINERS.get(w, "determiner")
-    if p == "G":
-        return "verbal noun (nominalised verb)"
-    return POS_NAMES.get(p, p)
-
-
-def lemma_for(token) -> str:
-    """Wylie lemma: the word itself (affixes are separate tokens, so no stripping is needed)."""
-    return token.surface.strip()
-
-
-def to_word_events(sentence, headword_check: Optional[Callable[[str], bool]] = None) -> List[dict]:
-    """Backend-compatible WordEvent dicts (typing_models/grammar_events.py) for one tagged sentence.
-    `meaning` is left empty: it comes from a dictionary or an LLM, not from the tagger."""
+def to_word_events(sentence, headword_check: Optional[Callable[[str], bool]] = None,
+                   prev_sentence=None) -> List[dict]:
+    """Backend-compatible WordEvent dicts (typing_models/grammar_events.py) for one parsed sentence,
+    with `function` from the rule layer. `meaning` is left empty: it comes from a dictionary or an
+    LLM, not from the tagger."""
     events = []
-    prev = None
-    for i, t in enumerate(sentence.tokens):
-        if t.is_punct:
-            continue
-        lemma = lemma_for(t)
-        surface_tib = with_trailing_tsheg(wylie_to_unicode(t.surface))
-        link = is_linkable(lemma, headword_check) and t.pos in ("N", "P", "V", "G", "J", "A", "M", "R")
+    for d in flat_tokens([sentence]):
+        t = d["_tok"]
+        lemma = d["wylie"]
+        link = (not d["affix"]) and is_linkable(lemma, headword_check) and t.pos in ("N", "P", "V", "G", "J", "A", "M", "R")
         ev = {
             "type": "word",
-            "surface": surface_tib,
+            "surface": with_trailing_tsheg(wylie_to_unicode(t.surface)),
             "lemma": lemma,
             "transliteration": t.surface,
-            "function": function_for(t, prev),
+            "function": function_for(d),
             "meaning": "",
             "external_source": "steinert" if link else None,
             "external_url": steinert_url(remove_case_endings(lemma)) if link else None,
@@ -200,5 +238,4 @@ def to_word_events(sentence, headword_check: Optional[Callable[[str], bool]] = N
             u = sentence.units[t.unit]
             ev["sanskrit_unit"] = {"index": t.unit, "text": u.text, "lemma": u.type or None}
         events.append(ev)
-        prev = t.pos
     return events

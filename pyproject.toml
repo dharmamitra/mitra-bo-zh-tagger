@@ -16,3 +16,6 @@ mitra-tag = "mitra_tagger.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["mitra_tagger*"]
+
+[tool.setuptools.package-data]
+mitra_tagger = ["tibetan_verbs.csv"]
