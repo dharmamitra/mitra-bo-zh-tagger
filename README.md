@@ -1,7 +1,7 @@
 # mitra-bo-zh-tagger
 
 Sentence segmentation, word segmentation, part-of-speech tagging and Sanskrit-unit annotation for
-classical Tibetan (Wylie or Unicode) and Buddhist Chinese (Taishō-style, unpunctuated), using
+classical Tibetan (Wylie or Unicode) and Buddhist Chinese, using
 the [`buddhist-nlp/mitra-bo-zh-tagger`](https://huggingface.co/buddhist-nlp/mitra-bo-zh-tagger) model
 (a 9B Qwen3.5-based model). For Chinese the model also restores punctuation.
 
@@ -79,8 +79,8 @@ print(chinese_grammar.punctuated(res[0]["sentences"][0]))   # 若能如是觀者
 
 `tag()` splits long input into chunks the model was trained on (Tibetan: sentence groups of up to ~500
 characters of Wylie, split at shad; Chinese: windows of up to 200 characters, split at existing sentence
-marks if any), generates greedily, parses the output and **validates that the annotation reproduces the
-input exactly** (letters for Tibetan, CJK characters for Chinese). An invalid chunk is split in half and
+marks if any), generates greedily, parses the output and validates that the annotation reproduces the
+input exactly (letters for Tibetan, CJK characters for Chinese). An invalid chunk is split in half and
 retried once; `valid` reports the result. Chinese punctuation in the input is discarded before tagging
 and re-predicted.
 
@@ -105,24 +105,21 @@ attached to the preceding syllable in the input (`'i`, `s`, `r`, `'o`, `'am`, `'
 
 Segmentation is at the dictionary-lexeme level: a stem and its case particle, an adverb and its verb, a
 verb and its auxiliary are always separate words; genuine multi-syllable lexemes (`byang_chub_sems_dpa'`)
-stay whole. Chinese words are Sanskrit-lemma sized (compound members are separate words, transliterated
-names are one word).
+stay whole. 
 
 ## Tibetan grammar layer
 
 The tagger gives segmentation and a coarse tag. For deployment, dharamitra's grammar-explained mode
 runs a **rule-based layer on top of the tagger output** that turns tags into spelled-out grammatical
-functions and tense notes. That layer is shipped here unchanged from the deployed backend branch
-(`feat/tibetan-tagger`, `api/services/`), so this package produces the same labels the website shows:
+functions and tense notes.
 
-* `mitra_tagger/tibetan_rules.py` — the original layer (24–25 September 2026): the case-particle
+* `mitra_tagger/tibetan_rules.py`: The case-particle
   versus converb decision (the same morpheme is a case particle after a noun or verbal noun and a
   converb after a verb, for the 13 morpheme groups kyi, kyis, la, na, nas, las, du, dang, te, zhing,
   rung, kyin, pas), clitics, determiners, relator nouns (a noun that takes a genitive before it or a
   spatial case after it), negation, fused demonstrative + case forms (der, des, 'dir, gang gis …), and
   verb-stem notes ("past stem of 'jog") from `tibetan_verbs.csv`.
-* `mitra_tagger/tibetan_rules_ext.py` — the six rule families added in the 25 September ablation
-  (config s7: +342 Elo over the base layer), on by default; `TIB_RULE_STEPS="" ` disables them,
+* `mitra_tagger/tibetan_rules_ext.py` on by default; `TIB_RULE_STEPS="" ` disables them,
   `TIB_RULE_STEPS=special,regex` picks families: special verbs (copulas, existentials, modals nus /
   dgos / srid / shes, the byed / 'gro / 'gyur paradigms), pronouns, adverbs (intensifiers such as rab tu,
   the -chad directionals, proclausal and temporal adverbs, terminative adverbials), nominalisers beyond
@@ -136,7 +133,7 @@ functions and tense notes. That layer is shipped here unchanged from the deploye
   backend's `WordEvent` records (`surface`, `lemma`, `transliteration`, `function`, `meaning`,
   `external_source`, `external_url`, `mitra`, plus `sanskrit_unit`). `meaning` is left empty.
 
-When no rule applies, the label falls back to the plain POS name, exactly as in the backend. The
+When no rule applies, the label falls back to the plain POS name. The
 regex family deliberately declines in some cases (e.g. a final particle that fails the sandhi check).
 
 ### Sources of the rules
@@ -163,12 +160,8 @@ regex family deliberately declines in some cases (e.g. a final particle that fai
    lists were used as a reference when filling the closed-class lists (pronouns, adverbs, quantifiers,
    relator nouns). It is not loaded at runtime; its verb list (verblex.txt) is not used yet.
 
-Plus additions of the backend's author. The tag set of the tagger itself is the terse scheme of the
-tibetan-segmentation project (the manual's tags collapsed to 14 letters); the Sanskrit-unit brackets
-come from the Sanskrit–Tibetan alignments used to build the training data.
-
 `mitra_tagger.chinese_grammar` is a thin counterpart for Chinese (POS names, compound types, DDB
-links, `punctuated()`); there is no rule layer for Chinese yet.
+links, `punctuated()`).
 
 ## Quality
 
@@ -179,14 +172,5 @@ word boundary F1 0.94 (zh) / 0.95 (bo), POS accuracy 0.94 for both, sentence bou
 Tibetan (1%) and occasional for 200-character Chinese windows (14%, single-character slips); the
 `valid` flag and the split-and-retry handle these.
 
-## How the model was trained
-
-Targets were generated from cross-lingual evidence and validated mechanically: Sanskrit–Tibetan and
-Sanskrit–Chinese word alignments with Sanskrit morphology, the Japanese kundoku readings of the
-Kokuyaku Issaikyō for Chinese, and Gemini 3.8 Flash producing (Tibetan) or correcting (Chinese) the
-annotation under the constraint that it reproduce the input exactly. The two languages were trained
-jointly on the `buddhist-nlp` 9B stage-2 base model. See the model card for details.
-
 ## License
-
-MIT for this code. The model weights follow the license on the model card.
+GPL on the code -- attribution is welcome, if you find the model useful in your work, please give a reference to the Dharmamitra project! 
