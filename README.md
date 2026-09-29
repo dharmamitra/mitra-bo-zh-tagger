@@ -107,6 +107,34 @@ Segmentation is at the dictionary-lexeme level: a stem and its case particle, an
 verb and its auxiliary are always separate words; genuine multi-syllable lexemes (`byang_chub_sems_dpa'`)
 stay whole. 
 
+### Sentence segmentation
+
+The model decides sentence boundaries itself; each output line is one sentence.
+
+* **Tibetan:** boundaries are not taken from the shad. A sentence is a main clause ending in a finite
+  verb plus its final particle, or a complete utterance; subordinate clauses stay on the same line, and
+  direct speech together with its speech verb counts as one sentence. So a double shad inside a verse or
+  list does not force a break, and a break can fall after a single shad. Shad runs are kept as `|/p`
+  and `||/p` tokens wherever they occur in the input.
+
+  ```
+  in : de nas tshe dang ldan pa kun dga' bos bcom ldan 'das la 'di skad ces gsol to/ /bcom ldan 'das chos kyi rgyal po ni gang lags/
+  out: [de_nas/A] [tshe_dang_ldan_pa/J] [kun_dga'_bo/P] +s/C [bcom_ldan_'das/N] la/C 'di_skad/A ces/L [gsol/V] to/L ||/p
+       [bcom_ldan_'das/N] [chos/N kyi/C rgyal_po/N] ni/L [gang/R] lags/V |/p
+  ```
+
+* **Chinese:** the input carries no punctuation, so the model places the sentence-final marks
+  (。？！, with closing quotation marks) and the clause marks (，、：；) and thereby fixes the sentence
+  division. The standard follows the Japanese kundoku readings the model was trained on, which divide
+  sentences more finely than CBETA punctuation does (a CBETA ， between two finite clauses often becomes
+  a 。). `chinese_grammar.punctuated()` returns a sentence with the marks reinserted.
+
+  ```
+  in : 爾時世尊告諸比丘汝等當知一切諸法皆悉無常苦空無我若能如是觀者則得解脫
+  out: 爾/R 時/N 世尊/N 告/V 諸/L 比丘/N ：/p 「/p 汝/R 等/L 當/X 知/V ，/p [一切/N 諸/L 法/N]=K 皆/A 悉/A 無常/J 、/p 苦/J 、/p 空/J 、/p [無/V 我/R]=B 。/p
+       若/S 能/X 如/V 是/R 觀/V 者/L ，/p 則/K 得/X 解脫/V 。/p 」/p
+  ```
+
 ## Tibetan grammar layer
 
 The tagger gives segmentation and a coarse tag. For deployment, dharamitra's grammar-explained mode
