@@ -51,6 +51,9 @@ def _disable_cuda_kernels(device: str) -> None:
             setattr(m, name, None)
     if hasattr(m, "is_fast_path_available"):
         m.is_fast_path_available = False
+    # the fused gated RMSNorm from flash-linear-attention is a Triton kernel as well
+    if getattr(m, "FusedRMSNormGated", None) is not None and hasattr(m, "Qwen3_5RMSNormGated"):
+        m.FusedRMSNormGated = None
 
 
 class Tagger:
