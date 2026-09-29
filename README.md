@@ -1,9 +1,9 @@
 # mitra-bo-zh-tagger
 
 Sentence segmentation, word segmentation, part-of-speech tagging and Sanskrit-unit annotation for
-**classical Tibetan** (Wylie or Unicode) and **Buddhist Chinese** (Taishō-style, unpunctuated), using
+classical Tibetan (Wylie or Unicode) and Buddhist Chinese (Taishō-style, unpunctuated), using
 the [`buddhist-nlp/mitra-bo-zh-tagger`](https://huggingface.co/buddhist-nlp/mitra-bo-zh-tagger) model
-(a 9B Qwen3.5-based model finetuned by the MITRA project). For Chinese the model also restores punctuation.
+(a 9B Qwen3.5-based model. For Chinese the model also restores punctuation.
 
 ```
 in : de nas tshe dang ldan pa kun dga' bos bcom ldan 'das la 'di skad ces gsol to/ /
@@ -24,7 +24,7 @@ git clone https://github.com/dharmamitra/mitra-bo-zh-tagger && cd mitra-bo-zh-ta
 Requirements: Python 3.10+, PyTorch 2.2+, transformers 4.57+ (Qwen3.5 architecture). The model weights
 (18 GB, bfloat16) are downloaded from the Hugging Face Hub on first use.
 
-**Mac (Apple Silicon):** works out of the box on the MPS backend in float16; you need a machine with at
+**Mac (Apple Silicon):** works out of the box on the MPS backend in float16. You need a machine with at
 least 24 GB of unified memory (32 GB recommended). Install PyTorch with `pip install torch` (the default
 wheel includes MPS). If an operator is missing on MPS, run with `PYTORCH_ENABLE_MPS_FALLBACK=1`.
 **Linux/Windows with an NVIDIA GPU:** bfloat16 on CUDA, ~19 GB of VRAM.
@@ -90,7 +90,7 @@ verb and its auxiliary are always separate words; genuine multi-syllable lexemes
 stay whole. Chinese words are Sanskrit-lemma sized (compound members are separate words, transliterated
 names are one word).
 
-## Tibetan grammar layer (dharmamitra conventions)
+## Tibetan grammar layer
 
 `mitra_tagger.tibetan_grammar` carries the tables and rules that the dharmamitra main backend uses in
 its Tibetan grammar-explained mode, so tagger output can feed the same UI:
